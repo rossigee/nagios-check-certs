@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-const defaultConcurrency = 8
-
 const (
 	errExpiringShortly = "%s: ** '%s' (S/N %X) expires in %d hours! **"
 	errExpiringSoon    = "%s: '%s' (S/N %X) expires in roughly %d days."
@@ -60,7 +58,6 @@ var (
 	warnMonths  = flag.Int("months", 0, "Warn if the certificate will expire within this many months.")
 	warnDays    = flag.Int("days", 0, "Warn if the certificate will expire within this many days.")
 	checkSigAlg = flag.Bool("check-sig-alg", true, "Verify that non-root certificates are using a good signature algorithm.")
-	concurrency = flag.Int("concurrency", defaultConcurrency, "Maximum number of hosts to check at once.")
 )
 
 type certErrors struct {
@@ -92,9 +89,6 @@ func main() {
 	}
 	if *warnYears == 0 && *warnMonths == 0 && *warnDays == 0 {
 		*warnDays = 30
-	}
-	if *concurrency < 0 {
-		*concurrency = defaultConcurrency
 	}
 	var r = checkHost(*hostname)
 	if r.err != nil {
