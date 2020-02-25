@@ -16,6 +16,7 @@ const (
 	errExpiringShortly = "%s: ** '%s' (S/N %X) expires in %d hours! **"
 	errExpiringSoon    = "%s: '%s' (S/N %X) expires in roughly %d days."
 	errSunsetAlg       = "%s: '%s' (S/N %X) expires after the sunset date for its signature algorithm '%s'."
+	okStatus           = "%s: '%s' (S/N %X) still valid for roughly %d days."
 )
 
 type sigAlgSunset struct {
@@ -60,15 +61,10 @@ var (
 	checkSigAlg = flag.Bool("check-sig-alg", true, "Verify that non-root certificates are using a good signature algorithm.")
 )
 
-type certErrors struct {
-	commonName string
-	errs       []error
-}
-
 type hostResult struct {
-	host  string
 	err   error
-	certs []certErrors
+	warn   error
+	expiry string
 }
 
 func main() {
@@ -92,28 +88,18 @@ func main() {
 	}
 	var r = checkHost(*hostname)
 	if r.err != nil {
-		fmt.Println(fmt.Sprintf("TCP ERROR: %s", r.err))
+		fmt.Println(fmt.Sprintf("ERROR: %s", r.err))
 		os.Exit(2)
 	}
-  if len(r.certs) > 0 {
-		for _, cert := range r.certs {
-			if len(cert.errs) > 0 {
-				for _, err := range cert.errs {
-					fmt.Println(fmt.Sprintf("CERT ERROR: %s", err))
-					os.Exit(2)
-				}
-			}
-		}
-  }
-  fmt.Println("OK")
+	if r.warn != nil {
+		fmt.Println(fmt.Sprintf("WARNING: %s", r.warn))
+		os.Exit(1)
+	}
+	fmt.Println(fmt.Sprintf("OK: %s", r.expiry))
+	os.Exit(0)
 }
 
 func checkHost(host string) (result hostResult) {
-	result = hostResult{
-		host:  host,
-		certs: []certErrors{},
-	}
-
 	if !strings.ContainsAny(host, ":") {
 		host = fmt.Sprintf("%s:443", host)
 	}
@@ -133,29 +119,30 @@ func checkHost(host string) (result hostResult) {
 				continue
 			}
 			checkedCerts[string(cert.Signature)] = struct{}{}
-			cErrs := []error{}
 
 			// Check the expiration.
+			expiresIn := int64(cert.NotAfter.Sub(timeNow).Hours())
 			if timeNow.AddDate(*warnYears, *warnMonths, *warnDays).After(cert.NotAfter) {
-				expiresIn := int64(cert.NotAfter.Sub(timeNow).Hours())
 				if expiresIn <= 48 {
-					cErrs = append(cErrs, fmt.Errorf(errExpiringShortly, host, cert.Subject.CommonName, cert.SerialNumber, expiresIn))
+					result.err = fmt.Errorf(errExpiringShortly, host, cert.Subject.CommonName, cert.SerialNumber, expiresIn)
 				} else {
-					cErrs = append(cErrs, fmt.Errorf(errExpiringSoon, host, cert.Subject.CommonName, cert.SerialNumber, expiresIn/24))
+					result.warn = fmt.Errorf(errExpiringSoon, host, cert.Subject.CommonName, cert.SerialNumber, expiresIn/24)
 				}
+				return
 			}
 
 			// Check the signature algorithm, ignoring the root certificate.
 			if alg, exists := sunsetSigAlgs[cert.SignatureAlgorithm]; *checkSigAlg && exists && certNum != len(chain)-1 {
 				if cert.NotAfter.Equal(alg.sunsetsAt) || cert.NotAfter.After(alg.sunsetsAt) {
-					cErrs = append(cErrs, fmt.Errorf(errSunsetAlg, host, cert.Subject.CommonName, cert.SerialNumber, alg.name))
+					result.err = fmt.Errorf(errSunsetAlg, host, cert.Subject.CommonName, cert.SerialNumber, alg.name)
+					return
 				}
 			}
 
-			result.certs = append(result.certs, certErrors{
-				commonName: cert.Subject.CommonName,
-				errs:       cErrs,
-			})
+			// Record expiry details of main certificate for OK status
+			if certNum == 0 {
+				result.expiry = fmt.Sprintf(okStatus, host, cert.Subject.CommonName, cert.SerialNumber, expiresIn/24)
+			}
 		}
 	}
 
